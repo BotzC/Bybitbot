@@ -4,7 +4,6 @@ import pandas as pd
 import ta
 import requests
 from time import sleep
-from datetime import datetime, timedelta, timezone
 
 session = HTTP(
     api_key=api,
@@ -12,9 +11,9 @@ session = HTTP(
 )
 
 # Config:
-tp = 0.006  # Take Profit +0.6%
-sl = 0.009  # Stop Loss -0.9%
-timeframe = 30  # 30 minutes
+tp = 0.015  # Take Profit +0.9%
+sl = 0.006  # Stop Loss -0.7%
+timeframe = 30  # 15 minutes
 mode = 1  # 1 - Isolated, 0 - Cross
 leverage = 10
 qty = 50  # Amount of USDT for one order
@@ -43,15 +42,6 @@ def get_balance():
         print(err)
         return None
 
-def get_tickers():
-    try:
-        resp = session.get_tickers(category="linear")['result']['list']
-        symbols = [elem['symbol'] for elem in resp if 'USDT' in elem['symbol'] and 'USDC' not in elem['symbol']]
-        return symbols
-    except Exception as err:
-        print(err)
-        return []
-
 def klines(symbol):
     try:
         resp = session.get_kline(
@@ -79,6 +69,24 @@ def get_positions():
     except Exception as err:
         print(f'Error getting positions: {err}')
         return []
+
+def get_pnl():
+    try:
+        response = session.get_closed_pnl(category="linear", limit=50)
+        if 'result' not in response or 'list' not in response['result']:
+            raise ValueError("Unexpected response structure")
+        pnl_list = response['result']['list']
+        total_pnl = 0
+        for entry in pnl_list:
+            try:
+                total_pnl += float(entry['closedPnl'])
+            except KeyError:
+                print(f"Missing 'closedPnl' in entry: {entry}")
+            except ValueError:
+                print(f"Invalid 'closedPnl' value in entry: {entry}")
+        return total_pnl
+    except Exception as err:
+        print(f"An error occurred: {err}")
 
 def set_mode(symbol):
     try:
@@ -132,7 +140,7 @@ def place_order_market(symbol, side):
                 tpTriggerBy='MarkPrice',
                 slTriggerBy='MarkPrice'
             )
-            send_tg(f'📈 BUY Order: {symbol}\n 📌 Order Price: {mark_price}\n 💹 Qty: {order_qty}\n ✔️ TP: {tp_price}\n ✖️ SL: {sl_price}\n 📊 Live trades: {len(pos)+1}')
+            send_tg(f'📈 BUY: {symbol}\n📌 Order Price: {mark_price}\n💹 Qty: {order_qty}\n➡️ TP: {tp_price}\n➡️ SL: {sl_price}\n📊 Total P&L: {get_pnl()}\n💳 Balance: {balance}')
         elif side == 'sell':
             tp_price = round(mark_price - mark_price * tp, price_precision)
             sl_price = round(mark_price + mark_price * sl, price_precision)
@@ -147,26 +155,23 @@ def place_order_market(symbol, side):
                 tpTriggerBy='MarkPrice',
                 slTriggerBy='MarkPrice'
             )
-            send_tg(f'📉 SELL Order: {symbol}\n 📌 Order price: {mark_price}\n 💹 Qty: {order_qty}\n ✔️ TP: {tp_price}\n ✖️ SL: {sl_price}\n 📊 Live trades: {len(pos)+1}')
+            send_tg(f'📉 SELL: {symbol}\n📌 Order price: {mark_price}\n💹 Qty: {order_qty}\n➡️ TP: {tp_price}\n➡️ SL: {sl_price}\n📊 Total P&L: {get_pnl()}\n💳 Balance: {balance}')
     except Exception as err:
         print(f'Order placement error: {err}')
         send_tg(f'Error placing {side} order for {symbol}: {err}')
 
 def rsi_signal(symbol):
-    kl = klines(symbol)  # Assuming klines returns a DataFrame with 'Close' column
+    kl = klines(symbol)
     if 'Close' not in kl.columns:
         raise ValueError("DataFrame must contain 'Close' column")
 
-    # Calculate RSI and its SMA
     rsi_indicator = ta.momentum.RSIIndicator(kl['Close'], window=14)
     rsi = rsi_indicator.rsi()
     rsi_sma = ta.trend.sma_indicator(rsi, window=21)
 
-    # Ensure there are enough data points
     if len(rsi) < 21:
         return 'none'
 
-    # Get recent values
     rsi_prev3 = rsi.iloc[-3]
     rsi_prev = rsi.iloc[-2]
     rsi_curr = rsi.iloc[-1]
@@ -174,27 +179,12 @@ def rsi_signal(symbol):
     rsi_sma_prev = rsi_sma.iloc[-2]
     rsi_sma_curr = rsi_sma.iloc[-1]
 
-    # Check for RSI crossing SMA conditions
-    #cross_above = (rsi_prev < rsi_sma_prev) and (rsi_curr > rsi_sma_curr)
-    #cross_below = (rsi_prev > rsi_sma_prev) and (rsi_curr < rsi_sma_curr)
+    upp = (35 > rsi_curr and rsi_sma_curr < rsi_sma_prev and rsi_sma_prev3 > rsi_prev3 and rsi_sma_prev > rsi_prev and rsi_sma_curr < rsi_curr)
+    dww = (65 < rsi_curr and rsi_sma_curr > rsi_sma_prev and rsi_sma_prev3 < rsi_prev3 and rsi_sma_prev < rsi_prev and rsi_sma_curr > rsi_curr)
 
-    #crossed_above_70 = (rsi_prev < rsi_sma_prev and rsi_curr > rsi_sma_curr and rsi_prev > 70 and rsi_curr > 70 and rsi_curr < rsi_sma_curr)
-    #crossed_below_30 = (rsi_prev > rsi_sma_prev and rsi_curr < rsi_sma_curr and rsi_prev < 30 and rsi_curr < 30 and rsi_curr > rsi_sma_curr)
-    below_up = (rsi_prev3 < 30 and rsi_prev < 30 and rsi_curr > 30 and rsi_prev > rsi_sma_prev)
-    above_down = (rsi_prev3 > 70 and rsi_prev > 70 and rsi_curr < 70 and rsi_prev < rsi_sma_prev)
-
-    # Generate signals based on additional conditions
-
-    #if crossed_above_70:
-        #return 'down'
-
-    #if crossed_below_30:
-        #return 'up'
-
-    if above_down:
+    if dww:
         return 'down'
-
-    if below_up:
+    if upp:
         return 'up'
 
     return 'none'
@@ -213,11 +203,10 @@ def williamsR(symbol):
         return 'down'
     return 'none'
 
-max_pos = 10  # Max current orders
-symbols = get_tickers()  # Getting all symbols from the Bybit Derivatives
+max_pos = 5  # Max current orders
+symbols = ['LINAUSDT' , 'AIUSDT' , 'ETHUSDT' , 'APEUSDT' , 'NULSUSDT' , 'CLOUDUSDT' , 'IDEXUSDT' , 'NEIROETHUSDT' , 'UNIUSDT' , 'NOTUSDT' , 'BSWUSDT' , 'REEFUSDT' , 'TRBUSDT' , 'SOLUSDT' , 'AVAXUSDT' , 'AAVEUSDT' , 'CRVUSDT' , 'LEVERUSDT']
 
 while True:
-
     balance = get_balance()
     if balance is None:
         print('Cannot connect to API')
@@ -230,13 +219,10 @@ while True:
         pos = []  # Ensure pos is a list even if get_positions() returns None
     print(f'You have {len(pos)} positions: {pos}')
 
-    if len(pos) < max_pos:
-        for symbol in symbols:
-            if symbol in pos:
-                print(f'Skipping {symbol} because it is already in positions')
-                #send_tg(f'Skipping {symbol} because it is already in positions')
-                continue
-
+    for symbol in symbols:
+        if symbol in pos:
+            print(f'Skipping {symbol} because it is already in positions')
+        else:
             signal = rsi_signal(symbol)
             if signal == 'up':
                 print(f'Found BUY signal for {symbol}')
@@ -250,5 +236,6 @@ while True:
                 sleep(2)
                 place_order_market(symbol, 'sell')
                 sleep(5)
-    print('Waiting 2 mins')
-    sleep(120)
+
+    print('Waiting 5 mins')
+    sleep(300)
